@@ -26,7 +26,6 @@ env/
 ENV/
 .env
 .venv
-uv.lock
 .python-version
 env.bak/
 venv.bak/
