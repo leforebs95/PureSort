@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  slack-bot:
+    build: .
+    environment:
+      - $SLACK_BOT_TOKEN
+      - $SLACK_APP_TOKEN
+      - $ANTHROPIC_API_KEY
+    volumes:
+      - .:/app
+    working_dir: /app
