@@ -25,10 +25,14 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Place executables in the environment at the front of the path
 ENV PATH="/app/.venv/bin:$PATH"
 
+# Set default environment to DEV (can be overridden)
+ENV ENVIRONMENT=DEV
+
+# Expose the port our app runs on
+EXPOSE 3000
+
 # Reset the entrypoint, don't invoke `uv`
 ENTRYPOINT []
 
-# Run the FastAPI application by default
-# Uses `fastapi dev` to enable hot-reloading when the `watch` sync occurs
-# Uses `--host 0.0.0.0` to allow access from outside the container
-CMD ["gunicorn", "--config", "gunicorn.conf.py", "app:app"]
+# Run our Slack bot application
+CMD ["uv", "run", "python", "app.py"]

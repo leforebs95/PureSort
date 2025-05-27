@@ -3,10 +3,20 @@ version: '3.8'
 services:
   slack-bot:
     build: .
+    ports:
+      - "3000:3000"
     environment:
-      - $SLACK_BOT_TOKEN
-      - $SLACK_APP_TOKEN
-      - $ANTHROPIC_API_KEY
+      - ENVIRONMENT=${ENVIRONMENT:-DEV}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+      - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET}
+      - ANTHROPIC_API_TOKEN=${ANTHROPIC_API_TOKEN}
     volumes:
+      # Mount source code but preserve the .venv directory
       - .:/app
+      - /app/.venv
+      # Explicitly preserve .venv as anonymous volume
     working_dir: /app
+    # Restart policy for development
+    restart: unless-stopped
+    # Enable hot reload by overriding the default command in development
+    command: uv run python app.py
