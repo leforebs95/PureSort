@@ -1,0 +1,15 @@
+# Use the official AWS Lambda Python runtime as base image
+FROM public.ecr.aws/lambda/python:3.12-arm64
+
+# Copy requirements first for better Docker layer caching
+COPY requirements.txt ${LAMBDA_TASK_ROOT}/
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the application code
+COPY listeners/ ${LAMBDA_TASK_ROOT}/listeners/
+COPY app.py ${LAMBDA_TASK_ROOT}/
+
+# Set the CMD to your handler
+CMD ["app.lambda_handler"]
