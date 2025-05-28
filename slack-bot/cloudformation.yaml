@@ -1,0 +1,234 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Slack Bot Lambda Function with API Gateway using Container Images'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: 'prod'
+    AllowedValues: ['dev', 'staging', 'prod']
+    Description: 'Deployment environment'
+  
+  SlackBotToken:
+    Type: String
+    NoEcho: true
+    Description: 'Slack Bot Token'
+  
+  SlackSigningSecret:
+    Type: String
+    NoEcho: true
+    Description: 'Slack Signing Secret'
+  
+  AnthropicApiKey:
+    Type: String
+    NoEcho: true
+    Description: 'Anthropic API Token'
+  
+  ImageTag:
+    Type: String
+    Default: 'latest'
+    Description: 'Docker image tag to deploy'
+
+Resources:
+  # ECR Repository
+  SlackBotECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub '${AWS::StackName}-slack-bot'
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep last 10 images",
+                "selection": {
+                  "tagStatus": "tagged",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": {
+                  "type": "expire"
+                }
+              },
+              {
+                "rulePriority": 2,
+                "description": "Delete untagged images older than 1 day",
+                "selection": {
+                  "tagStatus": "untagged",
+                  "countType": "sinceImagePushed",
+                  "countUnit": "days",
+                  "countNumber": 1
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+
+  # IAM Role for Lambda
+  SlackBotLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-lambda-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub '${SlackBotS3Bucket}/*'
+                  - !GetAtt SlackBotS3Bucket.Arn
+        - PolicyName: ECRAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:BatchCheckLayerAvailability
+                Resource: !GetAtt SlackBotECRRepository.Arn
+
+  # S3 Bucket for file storage
+  SlackBotS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-files-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # Lambda Function using Container Image
+  SlackBotLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-slack-bot'
+      Role: !GetAtt SlackBotLambdaRole.Arn
+      PackageType: Image
+      Code:
+        ImageUri: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${SlackBotECRRepository}:${ImageTag}'
+      Environment:
+        Variables:
+          ENVIRONMENT: 'PROD'
+          SLACK_BOT_TOKEN: !Ref SlackBotToken
+          SLACK_SIGNING_SECRET: !Ref SlackSigningSecret
+          ANTHROPIC_API_TOKEN: !Ref AnthropicApiKey
+          S3_BUCKET_NAME: !Ref SlackBotS3Bucket
+      Timeout: 60
+      MemorySize: 512
+      ReservedConcurrentExecutions: 10
+    DependsOn: SlackBotECRRepository
+
+  # Lambda Permission for API Gateway
+  LambdaApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SlackBotLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub '${SlackBotApiGateway}/*/*'
+
+  # API Gateway
+  SlackBotApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${AWS::StackName}-api'
+      Description: 'API Gateway for Slack Bot'
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  # API Gateway Resource
+  SlackEventsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref SlackBotApiGateway
+      ParentId: !GetAtt SlackBotApiGateway.RootResourceId
+      PathPart: 'slack'
+
+  SlackEventsEventsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref SlackBotApiGateway
+      ParentId: !Ref SlackEventsResource
+      PathPart: 'events'
+
+  # API Gateway Method
+  SlackEventsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref SlackBotApiGateway
+      ResourceId: !Ref SlackEventsEventsResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SlackBotLambda.Arn}/invocations'
+
+  # API Gateway Deployment
+  SlackBotApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - SlackEventsMethod
+    Properties:
+      RestApiId: !Ref SlackBotApiGateway
+      StageName: !Ref Environment
+
+  # CloudWatch Log Group for Lambda
+  SlackBotLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${SlackBotLambda}'
+      RetentionInDays: 14
+
+Outputs:
+  ApiGatewayUrl:
+    Description: 'API Gateway URL for Slack Events'
+    Value: !Sub 'https://${SlackBotApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/slack/events'
+    Export:
+      Name: !Sub '${AWS::StackName}-api-url'
+
+  LambdaFunctionName:
+    Description: 'Lambda Function Name'
+    Value: !Ref SlackBotLambda
+    Export:
+      Name: !Sub '${AWS::StackName}-lambda-name'
+
+  S3BucketName:
+    Description: 'S3 Bucket Name for file storage'
+    Value: !Ref SlackBotS3Bucket
+    Export:
+      Name: !Sub '${AWS::StackName}-s3-bucket'
+
+  ECRRepositoryURI:
+    Description: 'ECR Repository URI'
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${SlackBotECRRepository}'
+    Export:
+      Name: !Sub '${AWS::StackName}-ecr-repo'
