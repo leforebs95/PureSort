@@ -115,7 +115,6 @@ Resources:
   SlackBotS3Bucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub '${AWS::StackName}-files-${AWS::AccountId}'
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -125,6 +124,10 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
 
   # Lambda Function using Container Image
   SlackBotLambda:
@@ -145,7 +148,6 @@ Resources:
       Timeout: 60
       MemorySize: 512
       ReservedConcurrentExecutions: 10
-    DependsOn: SlackBotECRRepository
 
   # Lambda Permission for API Gateway
   LambdaApiGatewayPermission:
@@ -206,9 +208,11 @@ Resources:
   # CloudWatch Log Group for Lambda
   SlackBotLogGroup:
     Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${SlackBotLambda}'
-      RetentionInDays: 14
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-slack-bot'
+      RetentionInDays: 30  # Increased from 14 for better debugging
 
 Outputs:
   ApiGatewayUrl:
