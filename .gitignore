@@ -68,3 +68,6 @@ log/
 *.tar.gz
 *.zip
 *.rar
+
+# CDK
+cdk.out/
