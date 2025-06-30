@@ -18,7 +18,7 @@ class SlackBotStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, environment: str = "dev", **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
         
-        self.environment = environment
+        self._environment = environment
         
         # ECR Repository - retained on deletion to preserve images
         self.ecr_repository = ecr.Repository(
@@ -203,7 +203,7 @@ class SlackBotStack(Stack):
             if value:
                 ssm.StringParameter(
                     self, f"SlackBot{param_name.replace('-', '').title()}",
-                    parameter_name=f"/{self.environment}/slack-bot/{param_name}",
+                    parameter_name=f"/{self._environment}/slack-bot/{param_name}",
                     string_value=value,
                     type=ssm.ParameterType.SECURE_STRING,
                     description=f"Slack Bot {param_name.replace('-', ' ').title()}",

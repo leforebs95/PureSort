@@ -96,13 +96,13 @@ class SlackBotDeployer:
         infra_dir = self.project_root / "infrastructure"
         
         # Install CDK dependencies
-        self.run_command(["pip", "install", "-r", "requirements.txt"], cwd=str(infra_dir))
+        # self.run_command(["pip", "install", "-r", "requirements.txt"], cwd=str(infra_dir))
         
         # CDK deploy
         self.run_command([
             "cdk", "deploy", self.stack_name,
             "--require-approval", "never"
-        ], cwd=str(infra_dir))
+        ], cwd=str(self.project_root))
     
     def update_lambda_function(self, ecr_uri: str, function_name: str):
         """Update Lambda function with new image"""
