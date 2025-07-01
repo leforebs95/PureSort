@@ -6,7 +6,7 @@ from slack_bolt import App
 from slack_bolt.adapter.aws_lambda import SlackRequestHandler
 
 from listeners import register_listeners
-from secrets_manager import secrets_manager
+from utils.secrets_manager import secrets_manager
 
 load_dotenv()
 

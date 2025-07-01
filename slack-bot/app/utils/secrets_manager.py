@@ -81,11 +81,11 @@ class SecretsManager:
             return None
         return self.get_secret_value(secret_arn)
     
-    def get_anthropic_api_token(self) -> Optional[str]:
+    def get_anthropic_api_key(self) -> Optional[str]:
         """Get Anthropic API Token from Secrets Manager"""
-        secret_arn = os.environ.get('ANTHROPIC_API_TOKEN_SECRET_ARN')
+        secret_arn = os.environ.get('ANTHROPIC_API_KEY_SECRET_ARN')
         if not secret_arn:
-            logger.error("ANTHROPIC_API_TOKEN_SECRET_ARN environment variable not set")
+            logger.error("ANTHROPIC_API_KEY_SECRET_ARN environment variable not set")
             return None
         return self.get_secret_value(secret_arn)
 
