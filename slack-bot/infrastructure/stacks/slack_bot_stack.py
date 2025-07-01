@@ -8,11 +8,15 @@ from aws_cdk import (
     aws_apigateway as apigw,
     aws_iam as iam,
     aws_logs as logs,
-    aws_ssm as ssm,
+    aws_secretsmanager as secretsmanager,
     aws_s3 as s3,
 )
 from constructs import Construct
 import os
+import json
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class SlackBotStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, environment: str = "dev", **kwargs) -> None:
@@ -50,6 +54,8 @@ class SlackBotStack(Stack):
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
             removal_policy=RemovalPolicy.RETAIN
         )
+
+        self.secrets = self._create_secrets()
         
         # Lambda execution role
         lambda_role = iam.Role(
@@ -61,16 +67,13 @@ class SlackBotStack(Stack):
             inline_policies={
                 "SlackBotPolicy": iam.PolicyDocument(
                     statements=[
-                        # SSM Parameter access for secrets
+                        # Secrets Manager access
                         iam.PolicyStatement(
                             effect=iam.Effect.ALLOW,
                             actions=[
-                                "ssm:GetParameter",
-                                "ssm:GetParameters",
+                                "secretsmanager:GetSecretValue",
                             ],
-                            resources=[
-                                f"arn:aws:ssm:{self.region}:{self.account}:parameter/{environment}/slack-bot/*"
-                            ]
+                            resources=[secret.secret_arn for secret in self.secrets.values()]
                         ),
                         # S3 access for file storage
                         iam.PolicyStatement(
@@ -109,6 +112,10 @@ class SlackBotStack(Stack):
                 "ENVIRONMENT": "PROD" if environment == "prod" else "DEV",
                 "S3_BUCKET_NAME": self.s3_bucket.bucket_name,
                 "LOG_LEVEL": "INFO" if environment == "prod" else "DEBUG",
+                # Add secret ARNs as environment variables for easy access
+                "SLACK_BOT_TOKEN_SECRET_ARN": self.secrets["SLACK_BOT_TOKEN"].secret_arn,
+                "SLACK_SIGNING_SECRET_SECRET_ARN": self.secrets["SLACK_SIGNING_SECRET"].secret_arn,
+                "ANTHROPIC_API_KEY_SECRET_ARN": self.secrets["ANTHROPIC_API_KEY"].secret_arn,
             },
             log_retention=logs.RetentionDays.ONE_MONTH,
             reserved_concurrent_executions=10 if environment == "prod" else 5,
@@ -158,9 +165,6 @@ class SlackBotStack(Stack):
             ]
         )
         
-        # Create SSM parameters for secrets (if environment variables are provided)
-        self._create_ssm_parameters()
-        
         # Outputs
         CfnOutput(
             self, "ECRRepositoryURI",
@@ -189,22 +193,59 @@ class SlackBotStack(Stack):
             description="S3 Bucket for file storage",
             export_name=f"{environment}-slack-bot-s3-bucket"
         )
+
+        # Output secret ARNs for reference
+        for secret_name, secret in self.secrets.items():
+            CfnOutput(
+                self, f"{secret_name.replace('_', '')}SecretArn",
+                value=secret.secret_arn,
+                description=f"Secret ARN for {secret_name}",
+                export_name=f"{environment}-slack-bot-{secret_name.lower().replace('_', '-')}-secret-arn"
+            )
     
-    def _create_ssm_parameters(self):
-        """Create SSM parameters for secrets if environment variables exist"""
-        secrets = {
-            "SLACK_BOT_TOKEN": "bot-token",
-            "SLACK_SIGNING_SECRET": "signing-secret", 
-            "ANTHROPIC_API_TOKEN": "anthropic-api-key"
+    def _create_secrets(self) -> dict:
+        """Create or reference secrets in AWS Secrets Manager with smart value management"""
+        
+        secrets_config = {
+            "SLACK_BOT_TOKEN": "slack-bot-token",
+            "SLACK_SIGNING_SECRET": "slack-signing-secret", 
+            "ANTHROPIC_API_KEY": "anthropic-api-key"
         }
         
-        for env_var, param_name in secrets.items():
-            value = os.environ.get(env_var)
-            if value:
-                ssm.StringParameter(
-                    self, f"SlackBot{param_name.replace('-', '').title()}",
-                    parameter_name=f"/{self._environment}/slack-bot/{param_name}",
-                    string_value=value,
-                    type=ssm.ParameterType.SECURE_STRING,
-                    description=f"Slack Bot {param_name.replace('-', ' ').title()}",
+        secrets = {}
+        
+        for env_var, secret_name in secrets_config.items():
+            secret_full_name = f"{self._environment}/slack-bot/{secret_name}"
+            construct_id = f"SlackBot{env_var.replace('_', '').title()}Secret"
+            
+            # Get local environment variable value
+            local_value = os.environ.get(env_var)
+            if not local_value:
+                raise ValueError(f"Environment variable {env_var} is required but not set")
+            
+            try:
+                # Try to import existing secret
+                secret = secretsmanager.Secret.from_secret_name_v2(
+                    self, construct_id,
+                    secret_name=secret_full_name
                 )
+                secrets[env_var] = secret
+                
+            except Exception:
+                # Secret doesn't exist, create new one
+                print(f"Creating new secret: {secret_full_name}")
+                
+                secret = secretsmanager.Secret(
+                    self, construct_id,
+                    secret_name=secret_full_name,
+                    description=f"Slack Bot {secret_name.replace('-', ' ').title()}",
+                    generate_secret_string=secretsmanager.SecretStringGenerator(
+                        secret_string_template=json.dumps({"value": local_value}),
+                        generate_string_key="dummy"  # Required but not used since we provide the full template
+                    ),
+                    removal_policy=RemovalPolicy.RETAIN
+                )
+                
+                secrets[env_var] = secret
+        
+        return secrets
