@@ -1,11 +1,15 @@
 import os
 import re
+import logging
 from dotenv import load_dotenv
 from typing import List, Dict
 
 import anthropic
+from .secrets_manager import secrets_manager
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_SYSTEM_CONTENT = """
 You're an assistant in a Slack workspace.
@@ -15,12 +19,38 @@ When you include markdown text, convert them to Slack compatible ones.
 When a prompt has Slack's special syntax like <@USER_ID> or <#CHANNEL_ID>, you must keep them as-is in your response.
 """
 
+def get_anthropic_client():
+    """Get Anthropic client with API key from appropriate source"""
+    environment = os.environ.get("ENVIRONMENT", "DEV").upper()
+    
+    if environment == "PROD":
+        # Production: Use AWS Secrets Manager
+        api_key = secrets_manager.get_anthropic_api_key()
+        if not api_key:
+            raise ValueError("Failed to retrieve Anthropic API key from Secrets Manager")
+    else:
+        # Development: Use environment variables (fallback to Secrets Manager if available)
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        
+        # Fallback to Secrets Manager if environment variable is not set
+        if not api_key and os.environ.get("ANTHROPIC_API_KEY_SECRET_ARN"):
+            logger.info("Falling back to Secrets Manager for Anthropic API key")
+            api_key = secrets_manager.get_anthropic_api_key()
+        
+        if not api_key:
+            raise ValueError("Failed to retrieve Anthropic API key from environment variables or Secrets Manager")
+    
+    return anthropic.Anthropic(api_key=api_key)
 
 def call_llm(
     messages_in_thread: List[Dict[str, str]],
     system_content: str = DEFAULT_SYSTEM_CONTENT,
 ) -> str:
-    client = anthropic.Anthropic()
+    try:
+        client = get_anthropic_client()
+    except ValueError as e:
+        logger.error(f"Failed to initialize Anthropic client: {e}")
+        return "I'm sorry, but I'm having trouble connecting to my AI service. Please try again later."
     
     # Convert messages to Claude's format
     messages = []
@@ -32,16 +62,18 @@ def call_llm(
             "content": msg["content"]
         })
     
-    response = client.messages.create(
-        model="claude-3-opus-20240229",
-        max_tokens=4096,
-        system=system_content,
-        messages=messages
-    )
-    print(response)
-    return markdown_to_slack(response.content[0].text)
-
-
+    try:
+        response = client.messages.create(
+            model="claude-3-opus-20240229",
+            max_tokens=4096,
+            system=system_content,
+            messages=messages
+        )
+        logger.debug(f"Anthropic API response: {response}")
+        return markdown_to_slack(response.content[0].text)
+    except Exception as e:
+        logger.error(f"Error calling Anthropic API: {e}")
+        return "I'm sorry, but I encountered an error while processing your request. Please try again later."
 
 # Conversion from OpenAI markdown to Slack mrkdwn
 # See also: https://api.slack.com/reference/surfaces/formatting#basics

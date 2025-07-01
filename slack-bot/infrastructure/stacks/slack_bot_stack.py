@@ -3,16 +3,21 @@ from aws_cdk import (
     Duration,
     RemovalPolicy,
     CfnOutput,
+    SecretValue,
     aws_lambda as _lambda,
     aws_ecr as ecr,
     aws_apigateway as apigw,
     aws_iam as iam,
     aws_logs as logs,
-    aws_ssm as ssm,
+    aws_secretsmanager as secretsmanager,
     aws_s3 as s3,
 )
 from constructs import Construct
 import os
+import json
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class SlackBotStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, environment: str = "dev", **kwargs) -> None:
@@ -20,36 +25,14 @@ class SlackBotStack(Stack):
         
         self._environment = environment
         
-        # ECR Repository - retained on deletion to preserve images
-        self.ecr_repository = ecr.Repository(
-            self, "SlackBotRepository",
-            repository_name=f"puresort-slack-bot-{environment}",
-            image_scan_on_push=True,
-            lifecycle_rules=[
-                ecr.LifecycleRule(
-                    description="Keep only 10 most recent images",
-                    max_image_count=10,
-                    tag_status=ecr.TagStatus.ANY,
-                ),
-                ecr.LifecycleRule(
-                    description="Delete untagged images after 7 days",
-                    max_image_age=Duration.days(7),
-                    tag_status=ecr.TagStatus.UNTAGGED,
-                )
-            ],
-            removal_policy=RemovalPolicy.RETAIN
-        )
+        # ECR Repository - get existing or create new with conditional logic
+        self.ecr_repository = self._get_or_create_ecr_repository()
         
-        # S3 Bucket for file storage (if needed)
-        self.s3_bucket = s3.Bucket(
-            self, "SlackBotBucket",
-            bucket_name=f"puresort-slack-bot-{environment}-{self.account}",
-            versioned=True,
-            encryption=s3.BucketEncryption.S3_MANAGED,
-            public_read_access=False,
-            block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
-            removal_policy=RemovalPolicy.RETAIN
-        )
+        # S3 Bucket - get existing or create new with conditional logic
+        self.s3_bucket = self._get_or_create_s3_bucket()
+        
+        # Secrets - get existing or create new with conditional logic
+        self.secrets = self._get_or_create_secrets()
         
         # Lambda execution role
         lambda_role = iam.Role(
@@ -61,16 +44,13 @@ class SlackBotStack(Stack):
             inline_policies={
                 "SlackBotPolicy": iam.PolicyDocument(
                     statements=[
-                        # SSM Parameter access for secrets
+                        # Secrets Manager access
                         iam.PolicyStatement(
                             effect=iam.Effect.ALLOW,
                             actions=[
-                                "ssm:GetParameter",
-                                "ssm:GetParameters",
+                                "secretsmanager:GetSecretValue",
                             ],
-                            resources=[
-                                f"arn:aws:ssm:{self.region}:{self.account}:parameter/{environment}/slack-bot/*"
-                            ]
+                            resources=[f"{secret.secret_arn}*" for secret in self.secrets.values()]
                         ),
                         # S3 access for file storage
                         iam.PolicyStatement(
@@ -109,6 +89,10 @@ class SlackBotStack(Stack):
                 "ENVIRONMENT": "PROD" if environment == "prod" else "DEV",
                 "S3_BUCKET_NAME": self.s3_bucket.bucket_name,
                 "LOG_LEVEL": "INFO" if environment == "prod" else "DEBUG",
+                # Add secret ARNs as environment variables for easy access
+                "SLACK_BOT_TOKEN_SECRET_NAME": f"{self._environment}/slack-bot/slack-bot-token",
+                "SLACK_SIGNING_SECRET_SECRET_NAME": f"{self._environment}/slack-bot/slack-signing-secret", 
+                "ANTHROPIC_API_KEY_SECRET_NAME": f"{self._environment}/slack-bot/anthropic-api-key",
             },
             log_retention=logs.RetentionDays.ONE_MONTH,
             reserved_concurrent_executions=10 if environment == "prod" else 5,
@@ -158,9 +142,6 @@ class SlackBotStack(Stack):
             ]
         )
         
-        # Create SSM parameters for secrets (if environment variables are provided)
-        self._create_ssm_parameters()
-        
         # Outputs
         CfnOutput(
             self, "ECRRepositoryURI",
@@ -189,22 +170,142 @@ class SlackBotStack(Stack):
             description="S3 Bucket for file storage",
             export_name=f"{environment}-slack-bot-s3-bucket"
         )
-    
-    def _create_ssm_parameters(self):
-        """Create SSM parameters for secrets if environment variables exist"""
-        secrets = {
-            "SLACK_BOT_TOKEN": "bot-token",
-            "SLACK_SIGNING_SECRET": "signing-secret", 
-            "ANTHROPIC_API_TOKEN": "anthropic-api-key"
+
+        # Output secret ARNs for reference
+        for secret_name, secret in self.secrets.items():
+            CfnOutput(
+                self, f"{secret_name.replace('_', '')}SecretArn",
+                value=secret.secret_arn,
+                description=f"Secret ARN for {secret_name}",
+                export_name=f"{environment}-slack-bot-{secret_name.lower().replace('_', '-')}-secret-arn"
+            )
+
+    def _get_or_create_ecr_repository(self):
+        """Get existing ECR repository or create new one"""
+        repository_name = f"puresort-slack-bot-{self._environment}"
+        
+        try:
+            # Try to reference existing repository
+            print(f"Attempting to reference existing ECR repository: {repository_name}")
+            repository = ecr.Repository.from_repository_name(
+                self, "ExistingSlackBotRepository",
+                repository_name=repository_name
+            )
+            print(f"Successfully referenced existing ECR repository: {repository_name}")
+            return repository
+            
+        except Exception as e:
+            # Create new repository if it doesn't exist
+            print(f"ECR repository {repository_name} not found, creating new one. Error: {str(e)}")
+            
+            repository = ecr.Repository(
+                self, "SlackBotRepository",
+                repository_name=repository_name,
+                image_scan_on_push=True,
+                lifecycle_rules=[
+                    ecr.LifecycleRule(
+                        description="Keep only 10 most recent images",
+                        max_image_count=10,
+                        tag_status=ecr.TagStatus.ANY,
+                    ),
+                    ecr.LifecycleRule(
+                        description="Delete untagged images after 7 days",
+                        max_image_age=Duration.days(7),
+                        tag_status=ecr.TagStatus.UNTAGGED,
+                    )
+                ],
+                removal_policy=RemovalPolicy.RETAIN
+            )
+            
+            print(f"Created new ECR repository: {repository_name}")
+            return repository
+
+    def _get_or_create_s3_bucket(self):
+        """Get existing S3 bucket or create new one"""
+        bucket_name = f"puresort-slack-bot-{self._environment}-{self.account}"
+        
+        try:
+            # Try to reference existing bucket
+            print(f"Attempting to reference existing S3 bucket: {bucket_name}")
+            bucket = s3.Bucket.from_bucket_name(
+                self, "ExistingSlackBotBucket",
+                bucket_name=bucket_name
+            )
+            print(f"Successfully referenced existing S3 bucket: {bucket_name}")
+            return bucket
+            
+        except Exception as e:
+            # Create new bucket if it doesn't exist
+            print(f"S3 bucket {bucket_name} not found, creating new one. Error: {str(e)}")
+            
+            bucket = s3.Bucket(
+                self, "SlackBotBucket",
+                bucket_name=bucket_name,
+                versioned=True,
+                encryption=s3.BucketEncryption.S3_MANAGED,
+                public_read_access=False,
+                block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+                removal_policy=RemovalPolicy.RETAIN
+            )
+            
+            print(f"Created new S3 bucket: {bucket_name}")
+            return bucket
+        
+    def _get_or_create_secrets(self) -> dict:
+        """Get existing secrets or create new ones using conditional logic"""
+        
+        secrets_config = {
+            "SLACK_BOT_TOKEN": "slack-bot-token",
+            "SLACK_SIGNING_SECRET": "slack-signing-secret", 
+            "ANTHROPIC_API_KEY": "anthropic-api-key"
         }
         
-        for env_var, param_name in secrets.items():
-            value = os.environ.get(env_var)
-            if value:
-                ssm.StringParameter(
-                    self, f"SlackBot{param_name.replace('-', '').title()}",
-                    parameter_name=f"/{self._environment}/slack-bot/{param_name}",
-                    string_value=value,
-                    type=ssm.ParameterType.SECURE_STRING,
-                    description=f"Slack Bot {param_name.replace('-', ' ').title()}",
-                )
+        secrets = {}
+        
+        for env_var, secret_name in secrets_config.items():
+            secrets[env_var] = self._get_or_create_secret(env_var, secret_name)
+        
+        return secrets
+    
+    def _secret_exists(self, secret_name: str) -> bool:
+        """Check if a secret actually exists in AWS Secrets Manager"""
+        try:
+            print(f"Checking if secret exists: {secret_name}")
+            import boto3
+            secrets_client = boto3.client('secretsmanager')
+            secrets_client.describe_secret(SecretId=secret_name)
+            print(f"✓ Secret exists: {secret_name}")
+            return True
+        except Exception as e:
+            if hasattr(e, 'response') and e.response.get('Error', {}).get('Code') == 'ResourceNotFoundException':
+                print(f"✗ Secret not found: {secret_name}")
+                return False
+            else:
+                print(f"Error checking secret existence for {secret_name}: {e}")
+                # If we can't determine, assume it doesn't exist and try to create
+                return False
+
+    def _get_or_create_secret(self, env_var: str, secret_name: str) -> secretsmanager.Secret:
+        """Get existing secret or create new one"""
+        secret_full_name = f"{self._environment}/slack-bot/{secret_name}"
+        if self._secret_exists(secret_full_name):
+            # Secret exists, create reference
+            return secretsmanager.Secret.from_secret_name_v2(
+                self, f"Existing{env_var.replace('_', '').title()}Secret",
+                secret_name=secret_full_name
+            )
+        else:
+            # Secret doesn't exist, create it
+            local_value = os.environ.get(env_var)
+            if not local_value:
+                raise ValueError(f"Environment variable {env_var} is required for creating new secret")
+            
+            return secretsmanager.Secret(
+                self, f"SlackBot{env_var.replace('_', '').title()}Secret",
+                secret_name=secret_full_name,
+                description=f"Slack Bot {secret_name.replace('-', ' ').title()} for {self._environment} environment",
+                secret_string_value=SecretValue.unsafe_plain_text(
+                    json.dumps({"value": local_value})
+                ),
+                removal_policy=RemovalPolicy.RETAIN
+            )
