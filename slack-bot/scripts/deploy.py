@@ -65,6 +65,7 @@ class SlackBotDeployer:
         self.run_command([
             "docker", "build",
             "--platform", "linux/amd64",
+            "--provenance=false",
             "-t", f"slack-bot:{self.image_tag}",
             "-f", "app/Dockerfile",
             "./app"
