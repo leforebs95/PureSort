@@ -1,0 +1,9 @@
+{
+    "python_version": "3.13",
+    "dependencies": ["./agent", "."],
+    "graphs": {
+        "slack_agent": "./agent/graph.py:slack_agent"
+    },
+    "image_distro": "wolfi",
+    "env": ".env"
+}
