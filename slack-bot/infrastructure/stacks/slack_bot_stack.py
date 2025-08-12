@@ -72,6 +72,14 @@ class SlackBotStack(Stack):
             }
         )
         
+        # Create log group for Lambda function
+        log_group = logs.LogGroup(
+            self, "SlackBotLogGroup",
+            log_group_name=f"/aws/lambda/puresort-slack-bot-{environment}",
+            retention=logs.RetentionDays.ONE_MONTH,
+            removal_policy=RemovalPolicy.DESTROY
+        )
+
         # Lambda function using your existing code
         self.lambda_function = _lambda.Function(
             self, "SlackBotFunction",
@@ -94,7 +102,7 @@ class SlackBotStack(Stack):
                 "SLACK_SIGNING_SECRET_SECRET_NAME": f"{self._environment}/slack-bot/slack-signing-secret", 
                 "ANTHROPIC_API_KEY_SECRET_NAME": f"{self._environment}/slack-bot/anthropic-api-key",
             },
-            log_retention=logs.RetentionDays.ONE_MONTH,
+            log_group=log_group,
             reserved_concurrent_executions=10 if environment == "prod" else 5,
         )
         

@@ -2,6 +2,7 @@
 import os
 from aws_cdk import App, Environment
 from stacks.slack_bot_stack import SlackBotStack
+from stacks.slack_agent_stack import SlackAgentStack
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -37,6 +38,32 @@ prod_stack = SlackBotStack(
     tags={
         "Environment": "prod",
         "Project": "PuresortSlackBot", 
+        "Owner": "Engineering"
+    }
+)
+
+# Slack Agent Development stack
+dev_agent_stack = SlackAgentStack(
+    app, 
+    "SlackAgentDev",
+    environment="dev",
+    env=env,
+    tags={
+        "Environment": "dev",
+        "Project": "PuresortSlackAgent",
+        "Owner": "Engineering"
+    }
+)
+
+# Slack Agent Production stack  
+prod_agent_stack = SlackAgentStack(
+    app,
+    "SlackAgentProd", 
+    environment="prod",
+    env=env,
+    tags={
+        "Environment": "prod",
+        "Project": "PuresortSlackAgent", 
         "Owner": "Engineering"
     }
 )

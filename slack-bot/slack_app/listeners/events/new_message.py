@@ -1,17 +1,20 @@
+import asyncio
 import logging
-import requests
+import aiohttp
 from slack_bolt import Say, Ack
 from slack_sdk import WebClient
 
-from langgraph_sdk import get_client
+from langgraph_sdk import get_sync_client
+
+from dotenv import load_dotenv
+load_dotenv()
 
 AGENT_URL = "http://localhost:2024/"
 
 def create_agent_run(message:str):
-    client = get_client(url=AGENT_URL)
-    # thread_id = client.thread.create().thread_id
-    # assistant_id = client.assistants.create(
-    response = client.runs.create(
+    client = get_sync_client(url=AGENT_URL)
+    
+    response = client.runs.wait(
         thread_id=None,
         assistant_id="slack_agent",
         input={
@@ -42,9 +45,7 @@ def new_message_callback(ack: Ack, event: dict, say: Say, client: WebClient, log
     logger.info(f"Received new_message event from channel {channel_name}: {message}")
     
 
-    # agent_run = await create_agent_run(message)
-    # logger.info(f"Agent run created: {agent_run}")
-
-    client.chat_postMessage(channel=channel,
-                            text=f"Received new_message event from channel {channel_name}: {message}",
-                            thread_ts=event.get("ts"))
+    agent_run = create_agent_run(message)
+    logger.info(f"Agent run created: {agent_run}")
+    last_ai_message = [msg for msg in agent_run["messages"] if msg["type"] == "ai"][-1]
+    say(thread_ts=event.get("ts"), text=f"{last_ai_message['content']}")
